@@ -504,7 +504,7 @@ class DataSourceEc2(sources.DataSource):
             )
 
     @property
-    def network_config(self):
+    def network_config(self):  # pylint: disable=no-member
         """Return a network config dict for rendering ENI or netplan files."""
         if self._network_config != sources.UNSET:
             return self._network_config
@@ -525,7 +525,6 @@ class DataSourceEc2(sources.DataSource):
             # behavior on those releases.
             primary_mac = ec2.get_primary_mac_from_metadata(self.metadata)
             if primary_mac:
-                self._fallback_nic_order = NicOrder.METADATA
                 LOG.debug(
                     "Identified primary NIC via EC2 metadata: %s",
                     primary_mac,
