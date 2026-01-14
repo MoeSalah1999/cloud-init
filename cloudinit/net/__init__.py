@@ -40,6 +40,11 @@ OVS_INTERNAL_INTERFACE_LOOKUP_CMD = [
 ]
 
 
+def order_nics_freebsd(interfaces: List[str]) -> List[str]:
+    interfaces.sort(key=lambda i: (i != "hn0", i))
+    return interfaces
+
+
 def natural_sort_key(s, _nsre=re.compile("([0-9]+)")):
     """Sorting for Humans: natural sort order. Can be use as the key to sort
     functions.
@@ -376,7 +381,7 @@ def device_devid(devname):
 
 def get_devicelist():
     if util.is_FreeBSD() or util.is_DragonFlyBSD():
-        return list(get_interfaces_by_mac().values())
+        return find_candidate_nics_on_freebsd()
 
     try:
         devs = os.listdir(get_sys_class_path())
@@ -449,11 +454,15 @@ def find_candidate_nics_on_freebsd() -> List[str]:
     stdout, _stderr = subp.subp(["ifconfig", "-l", "-u", "ether"])
     values = stdout.split()
     if values:
-        return values
+        return order_nics_freebsd(values)
 
     # On FreeBSD <= 10, 'ifconfig -l' ignores the interfaces with DOWN
     # status
-    return sorted(get_interfaces_by_mac().values(), key=natural_sort_key)
+    macmap = get_interfaces_by_mac()
+    ifaces = []
+    for names in macmap.values():
+        ifaces.extend(names)
+    return sorted(ifaces, key=natural_sort_key)
 
 
 def find_fallback_nic_on_freebsd() -> Optional[str]:
@@ -929,7 +938,17 @@ def get_interfaces_by_mac_on_freebsd() -> dict:
             if m:
                 yield (m.group("mac"), m.group("ifname"))
 
-    results = {mac: ifname for mac, ifname in find_mac(flatten(out))}
+    results: Dict[str, str] = {}
+    for mac, ifname in find_mac(flatten(out)):
+        if mac in results:
+            LOG.debug(
+                "Duplicate MAC %s found on %s and %s; keeping first",
+                mac,
+                results[mac],
+                ifname,
+            )
+            continue
+        results[mac] = ifname
     return results
 
 
@@ -1092,7 +1111,10 @@ def get_interfaces(
 
     # Last-pass filter(s) which need the full device list to perform properly.
     if filter_hyperv_vf_with_synthetic:
-        filter_hyperv_vf_with_synthetic_interface(filtered_logger, ret)
+        if util.is_FreeBSD():
+            filter_hyperv_vf_with_synthetic_interface_freebsd(ret)
+        else:
+            filter_hyperv_vf_with_synthetic_interface(filtered_logger, ret)
 
     return ret
 
@@ -1137,6 +1159,24 @@ def filter_hyperv_vf_with_synthetic_interface(
             mac,
         )
         interfaces.remove(interface)
+
+
+def filter_hyperv_vf_with_synthetic_interface_freebsd(
+    interfaces: List[Tuple[str, str, str, str]],
+) -> None:
+    # Azure FreeBSD: hn* = synthetic, mce* = VF
+    has_hn = any(i[0].startswith("hn") for i in interfaces)
+    if not has_hn:
+        return
+
+    for interface in list(interfaces):
+        name = interface[0]
+        if name.startswith("mce"):
+            LOG.debug(
+                "Ignoring FreeBSD Hyper-V VF interface %s in presence of hn*",
+                name,
+            )
+            interfaces.remove(interface)
 
 
 def get_ib_hwaddrs_by_interface():
